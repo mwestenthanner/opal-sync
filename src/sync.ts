@@ -34,7 +34,21 @@ export async function uploadNotes() {
 
 		// if note has no id or id is not in db, upload, then write frontmatter
 		if (!fm || !JSON.stringify(notesInDb).includes(fm.id)) {
-			uploadNoteToDb(noteFolder, note.basename);
+			const res = await uploadNoteToDb(noteFolder, note.basename);
+			if (!fm) {
+				updateNote({
+					title: note.basename,
+					content: await readFile(note.path),
+					metadata: { id: res._id, lastModified: res.lastModified }
+				} as Note, note.path);
+			}
+
+			else {
+				await app.fileManager.processFrontMatter(note, (fm) => {
+					fm['lastModified'] = res.lastModified;
+					fm['id'] = res._id
+				})
+			}
 		} 
 
 		// if id is found, compare content/title, then update if necessary
@@ -43,7 +57,7 @@ export async function uploadNotes() {
 			const content = await getContentWithoutFrontmatter(note.path, fm);
 
 			if (noteInDb.title !== note.basename || noteInDb.content !== content) {
-				updateNoteInDb(noteFolder, note.basename);
+				await updateNoteInDb(noteFolder, note.basename);
 			}
 		}
 	});
@@ -76,13 +90,15 @@ async function uploadNoteToDb(folder: string, title: string) {
 	const headers = new Headers();
 	headers.append('Content-Type', 'application/json');
 
-	await fetch(apiUrl, {
+	const response = await fetch(apiUrl, {
 		method: 'POST',
 		headers: headers,
 		mode: 'cors',
 		cache: 'default',
 		body: body
 	});
+
+	return response.json();
 }
 
 async function updateNoteInDb(folder: string, title: string) {
@@ -154,13 +170,13 @@ async function readFile(path: string) {
 }
 
 function updateNote(note: Note, path: string) {
-	const file =  app.vault.getAbstractFileByPath(path) as TFile;
-	const frontmatter = generateFrontmatter(note);
+	const file = app.vault.getAbstractFileByPath(path) as TFile;
+	const frontmatter = generateFrontmatter(note.metadata);
 	app.vault.modify(file, frontmatter + note.content);
 }
 
 function createNote(note: Note, path: string) {
-	const frontmatter = generateFrontmatter(note);
+	const frontmatter = generateFrontmatter(note.metadata);
 	app.vault.create(path, frontmatter + note.content);
 }
 
@@ -179,8 +195,8 @@ async function convertFileToNote(folder: string, title: string) {
 	} as Note;
 }
 
-function generateFrontmatter(note: Note) {
-	const str = Object.entries(note.metadata).map(([fieldName, value]) => `${fieldName}: ${parseFrontmatterValue(value)}`).join("\n")
+function generateFrontmatter(data: Record<any, any>) {
+	const str = Object.entries(data).map(([fieldName, value]) => `${fieldName}: ${parseFrontmatterValue(value)}`).join("\n")
 	return "---\n" + str + "\n---\n"
 }
 
@@ -190,7 +206,7 @@ async function getContentWithoutFrontmatter(path: string, frontmatter: FrontMatt
 	return contentAll.split("\n").slice(lines + 1).join("\n");
 }
 
-function parseFrontmatterValue(value: string | Date) {
+function parseFrontmatterValue(value: any) {
 	if (value instanceof Date) {
 		return value.toISOString();
 	} else return value;
